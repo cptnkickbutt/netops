@@ -1,0 +1,25 @@
+name: Semantic Release
+
+on:
+  push:
+    branches: [ main ]
+
+permissions:
+  contents: write   # tag + release notes
+  id-token: write   # (future) OIDC to PyPI if you enable uploads
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # IMPORTANT: semantic-release needs full history & tags
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: pip install python-semantic-release build
+      - name: Run semantic-release (version, tag, GH release)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: semantic-release publish
