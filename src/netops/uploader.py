@@ -1,22 +1,37 @@
+from __future__ import annotations
+from pathlib import Path
+from netops.config import FileSvrCfg
+from netops.transports import make_ssh_client, ensure_dir_over_ssh
+from netops.transports.sftp import ensure_dir_over_ssh
 
-import os, paramiko
-from netops.logging import get_logger
-log = get_logger()
+__all__ = ["upload_to_file_server"]
 
-def store_on_server(file: str) -> None:
-    host = '10.100.3.9'; port = 22
-    user = os.getenv('USER3'); pw = os.getenv('PW1')
-    if not (user and pw):
-        log.warning("SFTP credentials missing; skip upload")
-        return
-    remote_path = f'/mnt/TelcomFS/Monthly_Speed_Audit/{file}'
+DEFAULT_REMOTE_DIR = "/mnt/TelcomFS/Daily_Export_and_Hash_Logs/"
+
+def upload_to_file_server(local_path: Path, cfg: FileSvrCfg, remote_dir: str = DEFAULT_REMOTE_DIR) -> str:
+    """
+    Upload a local file to the file server via SFTP.
+    Returns the remote path used.
+
+    Raises on failure with a clear message.
+    """
+    local_path = Path(local_path)
+    if not local_path.is_file():
+        raise FileNotFoundError(f"Upload source not found: {local_path}")
+
+    cfg.validate()
+    password = cfg.resolve_password()
+
+    client = make_ssh_client(cfg.host, cfg.port, cfg.user, password, timeout=10)
     try:
-        ssh_client = paramiko.SSHClient()
-        ssh_client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-        ssh_client.connect(host, port, user, pw)
-        sftp = ssh_client.open_sftp()
-        sftp.put(file, remote_path)
-        sftp.close(); ssh_client.close()
-        log.info(f"{file} successfully added to server")
-    except Exception as e:
-        log.error(f"SFTP upload failed: {e}")
+        ensure_dir_over_ssh(client, remote_dir)
+        sftp = client.open_sftp()
+        try:
+            remote_path = f"{remote_dir}{local_path.name}"
+            sftp.put(str(local_path), remote_path)
+        finally:
+            sftp.close()
+    finally:
+        client.close()
+
+    return remote_path

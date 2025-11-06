@@ -1,40 +1,58 @@
-
-import os, smtplib
+from __future__ import annotations
+import smtplib
+from pathlib import Path
+from typing import Iterable
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from email.mime.application import MIMEApplication
-from netops.logging import get_logger
-log = get_logger()
 
-def send_email(report_date: str, file: str) -> None:
-    recipients = [e.strip() for e in (os.getenv("EMAIL_TO") or "").split(",") if e.strip()]
-    bcc = [e.strip() for e in (os.getenv("EMAIL_BCC") or "").split(",") if e.strip()]
-    sender_email = os.getenv('EMAIL_USER')
-    sender_password = os.getenv('EMAIL_APP_PASSWORD')
-    if not sender_email or not sender_password or not recipients:
-        log.warning("Email config missing; skipping email")
+__all__ = ["send_email_with_attachment", "send_plain"]
+
+def send_plain(sender_email: str, sender_password: str, host: str, port: int,
+               recipients: Iterable[str], subject: str, body: str) -> None:
+    """Send a plain text email to a list of recipients."""
+    recipients = list(recipients)
+    if not recipients:
         return
-    subject = f'{report_date} Speed Audit Results'
-    body = (f'Attached speed data gathered on {report_date}.\n\n'
-            "*This is an automated message; replies won't be seen.*\n"
-            "Send any questions to eshortt@telcomsys.net")
-    message = MIMEMultipart()
-    message['From'] = sender_email
-    message['To'] = ','.join(recipients)
-    message['Subject'] = subject
-    message.attach(MIMEText(body, 'plain'))
-    with open(file, 'rb') as f:
-        message.attach(MIMEApplication(f.read(), Name=file))
-    all_recipients = recipients + bcc
-    try:
-        server = smtplib.SMTP('smtp.gmail.com', 587)
+    with smtplib.SMTP(host, port) as server:
         server.starttls()
         server.login(sender_email, sender_password)
-        text = message.as_string()
-        server.sendmail(sender_email, all_recipients, text)
-        log.info(f"Email sent to {recipients}")
-    except Exception as e:
-        log.error(f"Email failed: {e}")
-    finally:
-        try: server.quit()
-        except Exception: pass
+        for rcpt in recipients:
+            msg = MIMEText(body, "plain")
+            msg["From"] = sender_email
+            msg["To"] = rcpt
+            msg["Subject"] = subject
+            server.sendmail(sender_email, rcpt, msg.as_string())
+
+def send_email_with_attachment(sender_email: str, sender_password: str, host: str, port: int,
+                               recipients: Iterable[str], subject: str, body: str,
+                               file_path: Path) -> None:
+    """
+    Send a plaintext message with a single attachment.
+
+    NOTE: 'From' must be the sender email (not the password). This fixes a common bug.
+    """
+    recipients = list(recipients)
+    if not recipients:
+        return
+
+    file_path = Path(file_path)
+    if not file_path.is_file():
+        raise FileNotFoundError(f"Attachment missing: {file_path}")
+
+    with smtplib.SMTP(host, port) as server:
+        server.starttls()
+        server.login(sender_email, sender_password)
+        for rcpt in recipients:
+            msg = MIMEMultipart()
+            msg["From"] = sender_email
+            msg["To"] = rcpt
+            msg["Subject"] = subject
+            msg.attach(MIMEText(body, "plain"))
+
+            with file_path.open("rb") as f:
+                part = MIMEApplication(f.read(), Name=file_path.name)
+            part.add_header("Content-Disposition", "attachment", filename=file_path.name)
+            msg.attach(part)
+
+            server.sendmail(sender_email, rcpt, msg.as_string())

@@ -1,23 +1,13 @@
+from __future__ import annotations
+from typing import Protocol, Tuple, runtime_checkable
 
-from typing import Protocol
-import asyncio, functools, random
+__all__ = ["ExecTransport"]
 
-class Runner(Protocol):
-    async def run(self, command: str) -> str: ...
-    async def close(self) -> None: ...
-
-def retry_async(times=3, base=0.5, jitter=0.3, exceptions=(Exception,)):
-    def deco(fn):
-        @functools.wraps(fn)
-        async def wrapper(*a, **k):
-            delay = base
-            for attempt in range(1, times + 1):
-                try:
-                    return await fn(*a, **k)
-                except exceptions:
-                    if attempt == times:
-                        raise
-                    await asyncio.sleep(delay + random.uniform(0, jitter))
-                    delay *= 2
-        return wrapper
-    return deco
+@runtime_checkable
+class ExecTransport(Protocol):
+    """
+    Minimal interface for anything that can run a command and close.
+    Works for SSH and Telnet. No SFTP implied here.
+    """
+    def exec(self, cmd: str, timeout: int = 60) -> Tuple[str, str, int]: ...
+    def close(self) -> None: ...
