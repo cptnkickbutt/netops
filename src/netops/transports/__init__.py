@@ -10,8 +10,6 @@ from .telnet import make_telnet_client, telnet_exec
 from .telnet_async import (
     AsyncTelnetClient,
     TelnetLogin,
-    make_telnet_client_async,
-    telnet_exec_async,
 )
 
 __all__ = [

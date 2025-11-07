@@ -1,37 +1,32 @@
+# src/netops/uploader.py
 from __future__ import annotations
 from pathlib import Path
-from netops.config import FileSvrCfg
-from netops.transports import make_ssh_client, ensure_dir_over_ssh
-from netops.transports.sftp import ensure_dir_over_ssh
+import posixpath
+from .transports.sftp import sftp_upload_file
+from .config import FileSvrCfg
 
-__all__ = ["upload_to_file_server"]
-
-DEFAULT_REMOTE_DIR = "/mnt/TelcomFS/Daily_Export_and_Hash_Logs/"
-
-def upload_to_file_server(local_path: Path, cfg: FileSvrCfg, remote_dir: str = DEFAULT_REMOTE_DIR) -> str:
+def upload_to_file_server(
+    local_path: Path,
+    cfg: FileSvrCfg,
+    *,
+    remote_dir: str | None = None,
+) -> str:
     """
-    Upload a local file to the file server via SFTP.
-    Returns the remote path used.
-
-    Raises on failure with a clear message.
+    Upload a file to the SFTP server. The target directory is chosen in the CLI:
+      - If remote_dir is provided, use it.
+      - Else, use cfg.remote_dir (from .env).
+    Returns the remote POSIX path to the uploaded file.
     """
-    local_path = Path(local_path)
-    if not local_path.is_file():
-        raise FileNotFoundError(f"Upload source not found: {local_path}")
-
-    cfg.validate()
-    password = cfg.resolve_password()
-
-    client = make_ssh_client(cfg.host, cfg.port, cfg.user, password, timeout=10)
-    try:
-        ensure_dir_over_ssh(client, remote_dir)
-        sftp = client.open_sftp()
-        try:
-            remote_path = f"{remote_dir}{local_path.name}"
-            sftp.put(str(local_path), remote_path)
-        finally:
-            sftp.close()
-    finally:
-        client.close()
-
+    assert isinstance(cfg, FileSvrCfg)
+    target_dir = (remote_dir or cfg.remote_dir).rstrip("/")
+    remote_path = posixpath.join(target_dir, local_path.name)
+    sftp_upload_file(
+        host=cfg.host,
+        port=getattr(cfg, "port", 22),
+        username=cfg.username,
+        password=cfg.resolve_password(),
+        local_path=str(local_path),
+        remote_path=remote_path,
+        make_dirs=True,
+    )
     return remote_path

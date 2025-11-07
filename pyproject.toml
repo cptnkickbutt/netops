@@ -1,6 +1,6 @@
 [project]
 name = "netops"
-version = "0.1.0"
+version = "0.2.0"
 description = "Network operations tooling (Mikrotik, Omada, Speed Audit, etc.)"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -23,3 +23,23 @@ package-dir = {"" = "src"}
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.semantic_release]
+# Where the version lives (semantic-release will bump this automatically)
+version_variable = "src/netops/__init__.py:__version__"
+
+# The branch that triggers releases
+branch = "main"
+
+# Build command (if/when you want to publish to PyPI later)
+build_command = "python -m build"
+
+# Don’t upload to PyPI yet (flip to true when ready + set repo creds)
+upload_to_repository = false
+
+# Optional: treat breaking changes on 0.x as MINOR (False) or MAJOR (True).
+# default is False; set True if you want 0.x to behave like 1.x
+major_on_zero = false
+
+[tool.semantic_release.changelog]
+# (Optional) You can tune how release notes are formatted; defaults are fine.
