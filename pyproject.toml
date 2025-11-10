@@ -25,21 +25,21 @@ package-dir = {"" = "src"}
 where = ["src"]
 
 [tool.semantic_release]
-# Where the version lives (semantic-release will bump this automatically)
-version_variable = "src/netops/__init__.py:__version__"
+version_source = "tag"                               # tags drive the version
+commit_parser = "angular"                            # conventional commits
+changelog_file = "CHANGELOG.md"
+upload_to_pypi = false
+version_variables = [
+  "src/netops/__init__.py:__version__",
+]
 
-# The branch that triggers releases
-branch = "main"
-
-# Build command (if/when you want to publish to PyPI later)
-build_command = "python -m build"
-
-# Don’t upload to PyPI yet (flip to true when ready + set repo creds)
-upload_to_repository = false
-
-# Optional: treat breaking changes on 0.x as MINOR (False) or MAJOR (True).
-# default is False; set True if you want 0.x to behave like 1.x
-major_on_zero = false
 
 [tool.semantic_release.changelog]
 # (Optional) You can tune how release notes are formatted; defaults are fine.
+
+[tool.commitizen]
+name = "cz_conventional_commits"
+version = "0.2.0"
+tag_format = "v$version"
+update_changelog_on_bump = true
+changelog_file = "CHANGELOG.md"
