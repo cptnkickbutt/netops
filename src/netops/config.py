@@ -49,27 +49,38 @@ class MailCfg:
 # File server (SFTP) config
 # ---------------------------
 
+def _trail(p: str) -> str:
+    return (p or "").rstrip("/") + "/"
+
 @dataclass
 class FileSvrCfg:
     host: str
-    username: str
-    password: str
-    remote_dir: str
-    port: int = 22
+    port: int
+    user: str
+    password: str | None = None          # direct value or None if using env indirection
+    password_env: str | None = None      # optional name of env var that holds the password
+    base_dir: str = "/mnt/TelcomFS/"     # <— DEFAULT BASE DIR
 
     @classmethod
     def from_env(cls) -> "FileSvrCfg":
-        """
-        Build from current environment:
-          FILESERV_HOST, FILESERV_USER, FILESERV_PASSWORD, FILESERV_PATH, FILESERV_PORT
-        """
         return cls(
-            host=os.getenv("FILESERV_HOST", "").strip(),
-            username=os.getenv("FILESERV_USER", "").strip(),
-            password=os.getenv("FILESERV_PASSWORD", "").strip(),
-            remote_dir=os.getenv("FILESERV_PATH", "/mnt/TelcomFS/Monthly_Speed_Audit").strip(),
+            host=os.getenv("FILESERV_HOST", "10.100.3.9"),
             port=int(os.getenv("FILESERV_PORT", "22")),
+            user=os.getenv("FILESERV_USER", "eshortt"),
+            password=os.getenv("FILESERV_PASSWORD") if os.getenv("FILESERV_PASSWORD") else None,
+            password_env=os.getenv("FILESERV_PASSWORD_ENV"),
+            base_dir=_trail(os.getenv("FILESERV_BASE_DIR", "/mnt/TelcomFS/")),  # allows override
         )
+
+    def resolve_password(self) -> str:
+        if self.password:
+            return self.password
+        if self.password_env and os.getenv(self.password_env):
+            return os.getenv(self.password_env)  # type: ignore[arg-type]
+        raise EnvironmentError("File server password not provided (FILESERV_PASSWORD or FILESERV_PASSWORD_ENV).")
+
+    def base(self) -> str:
+        return _trail(self.base_dir)
 
     def resolve_password(self) -> str:
         """

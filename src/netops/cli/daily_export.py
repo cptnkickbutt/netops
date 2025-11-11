@@ -1,192 +1,203 @@
 # src/netops/cli/daily_export.py
 from __future__ import annotations
 
-import os, io, zipfile
+import os, zipfile, tempfile
 from pathlib import Path
 from datetime import datetime
+from typing import Dict, List, Optional
 
 import click
+import asyncio
 
-from ..config import load_env, load_inventory, resolve_env, FileSvrCfg
+from ..inventory import load_inventory_csv, select, Device
+from ..config import load_env, resolve_env, FileSvrCfg
 from ..logging import setup_logging, get_logger
 from ..uploader import upload_to_file_server
 from ..emailer import send_email_with_attachment
 from ..transports.ssh import make_ssh_client, ssh_exec
 from ..transports import sftp as sftp_utils
+from ..orchestrator import run_many_simple
 
 
-# ---------- focused helpers (logic only) ----------
+# --------- blocking helpers (run in threads) ---------
 
-def _ssh(ip: str, user: str, pw: str):
-    """Open SSH using our shared transport."""
-    return make_ssh_client(ip, 22, user, pw)  # returns connected paramiko.SSHClient
-
-def _pull_export_via_ssh(ssh) -> str:
-    """MikroTik full export → string (same pattern as ETTP)."""
-    ssh_exec(ssh, r'/export file="__netops_export__"')
-    sftp = ssh.open_sftp()
+def _pull_export_via_ssh_blocking(ip: str, user: str, pw: str) -> str:
+    ssh = make_ssh_client(ip, 22, user, pw)
     try:
-        with sftp.open("__netops_export__.rsc", "rb") as f:
-            return f.read().decode("utf-8", "ignore")
+        try: ssh_exec(ssh, "setline 0")
+        except Exception: pass
+        ssh_exec(ssh, r'/export file="__netops_export__"')
+        sftp = ssh.open_sftp()
+        try:
+            with sftp.open("__netops_export__.rsc", "rb") as f:
+                return f.read().decode("utf-8", "ignore")
+        finally:
+            try: sftp.remove("__netops_export__.rsc")
+            except Exception: pass
+            try: sftp.close()
+            except Exception: pass
     finally:
-        try:
-            sftp.remove("__netops_export__.rsc")
-        except Exception:
-            pass
-        try:
-            sftp.close()
-        except Exception:
-            pass
+        try: ssh.close()
+        except Exception: pass
 
-def _pull_hash_logs_via_sftp(ssh, ip: str, user: str, pw: str) -> tuple[dict[str, bytes], list[str]]:
-    """
-    Fetch log.N.txt via SFTP helpers (using handle-based listing).
-    Returns (logs_dict, present_names_list). Deletion is handled by caller.
-    """
-    out: dict[str, bytes] = {}
-
-    sftp = ssh.open_sftp()
+def _pull_hash_logs_blocking(ip: str, user: str, pw: str, *, delete_remote: bool) -> Dict[str, bytes]:
+    logs: Dict[str, bytes] = {}
+    ssh = make_ssh_client(ip, 22, user, pw)
     try:
-        names = set(sftp_utils.sftp_listdir(sftp, "."))
-    finally:
+        sftp = ssh.open_sftp()
         try:
-            sftp.close()
-        except Exception:
-            pass
+            names = set(sftp_utils.sftp_listdir(sftp, "."))
+        finally:
+            try: sftp.close()
+            except Exception: pass
 
-    present = []
-    for i in range(0, 100):
-        fname = f"log.{i}.txt"
-        if fname not in names:
-            continue
-        tmp = Path(".netops_tmp") / fname
-        sftp_utils.sftp_download_file(ip, 22, user, pw, fname, str(tmp))
-        out[fname] = tmp.read_bytes()
-        present.append(fname)
-        try:
-            tmp.unlink(missing_ok=True)
-        except Exception:
-            pass
+        present: List[str] = []
+        for i in range(0, 100):
+            fname = f"log.{i}.txt"
+            if fname not in names: continue
+            with tempfile.TemporaryDirectory(prefix="netops_logs_") as tdir:
+                tmp = Path(tdir) / fname
+                sftp_utils.sftp_download_file(ip, 22, user, pw, fname, str(tmp))
+                logs[fname] = tmp.read_bytes()
+                present.append(fname)
 
-    return out, present
-
-def _delete_hash_logs_via_ssh(ssh, present_names: list[str]) -> None:
-    """Remove log files on the device after successful download."""
-    for name in present_names:
-        try:
-            ssh_exec(ssh, f'/file remove [ find name="{name}" ]')
-        except Exception:
-            # non-fatal
-            pass
-
-def _pull_hotspot_via_sftp(ssh, ip: str, user: str, pw: str) -> dict[str, bytes]:
-    """
-    Use handle-based listing to detect hotspot folder, then
-    download recursively via sftp_download_dir(...).
-    NOTE: We NEVER delete the hotspot folder on the device.
-    """
-    base = None
-    sftp = ssh.open_sftp()
-    try:
-        try:
-            sftp.listdir("hotspot")
-            base = "hotspot"
-        except Exception:
-            pass
-        if base is None:
-            try:
-                sftp.listdir("/flash/hotspot")
-                base = "/flash/hotspot"
-            except Exception:
-                pass
-    finally:
-        try:
-            sftp.close()
-        except Exception:
-            pass
-
-    if base is None:
-        return {}
-
-    # Download to temp dir using connection-based helper, then read into memory.
-    temp_root = Path(".netops_tmp_hotspot")
-    temp_root.mkdir(exist_ok=True, parents=True)
-    try:
-        copied = sftp_utils.sftp_download_dir(ip, 22, user, pw, base, str(temp_root))
-        if copied == 0:
-            return {}
-        collected: dict[str, bytes] = {}
-        for p in temp_root.rglob("*"):
-            if p.is_file():
-                rel = p.relative_to(temp_root).as_posix()
-                collected[f"hotspot/{rel}"] = p.read_bytes()
-        return collected
-    finally:
-        # cleanup ONLY local temp files/dirs
-        for p in sorted(temp_root.rglob("*"), reverse=True):
-            try:
-                p.unlink()
-            except IsADirectoryError:
-                try: p.rmdir()
+        if delete_remote and present:
+            for name in present:
+                try: ssh_exec(ssh, f'/file remove [ find name="{name}" ]')
                 except Exception: pass
+
+        return logs
+    finally:
+        try: ssh.close()
+        except Exception: pass
+
+def _pull_hotspot_blocking(ip: str, user: str, pw: str) -> Dict[str, bytes]:
+    """Never delete remote hotspot; only read into memory via a tempdir."""
+    ssh = make_ssh_client(ip, 22, user, pw)
+    try:
+        sftp = ssh.open_sftp()
+        base: Optional[str] = None
+        try:
+            try:
+                sftp.listdir("hotspot"); base = "hotspot"
             except Exception:
                 pass
-        try: temp_root.rmdir()
-        except Exception:
-            pass
+            if base is None:
+                try:
+                    sftp.listdir("/flash/hotspot"); base = "/flash/hotspot"
+                except Exception:
+                    pass
+        finally:
+            try: sftp.close()
+            except Exception: pass
 
-def _zip_property(zf: zipfile.ZipFile, day_root: str, prop: str, export_text: str,
-                  logs: dict[str, bytes], hotspot: dict[str, bytes]) -> None:
-    root = f"{day_root}/{prop}"
-    zf.writestr(f"{root}/export.rsc", export_text or "")
-    if logs:
-        for name, data in logs.items():
-            zf.writestr(f"{root}/hash_logs/{name}", data)
-    if hotspot:
-        for rel, data in hotspot.items():
-            zf.writestr(f"{root}/{rel}", data)
+        if base is None: return {}
+
+        with tempfile.TemporaryDirectory(prefix="netops_hotspot_") as tdir:
+            count = sftp_utils.sftp_download_dir(ip, 22, user, pw, base, tdir)
+            if count == 0: return {}
+            collected: Dict[str, bytes] = {}
+            root = Path(tdir)
+            for p in root.rglob("*"):
+                if p.is_file():
+                    rel = p.relative_to(root).as_posix()
+                    collected[f"hotspot/{rel}"] = p.read_bytes()
+            return collected
+    finally:
+        try: ssh.close()
+        except Exception: pass
 
 
-# ---------- CLI ----------
+# --------- worker (async wrapper; uses threads for paramiko) ---------
+
+async def _collect_one(dev: Device, *, delete_remote_logs: bool, progress=None):
+    """
+    Returns (site_name, logs_dict, hotspot_dict, export_text, error_str|None)
+    - always export
+    - logs+hotspot only if 'backup' role present
+    """
+    log = get_logger()
+    prop, ip = dev.site, dev.mgmt_ip
+
+    # creds
+    try:
+        user, pw = resolve_env(dev.user_env, dev.pw_env)
+    except Exception as e:
+        msg = f"Env resolve failed: {e}"
+        log.error(f"{prop}: {msg}")
+        if progress: progress.done("Error")
+        return prop, {}, {}, msg, msg
+
+    # export (always)
+    try:
+        export_text = await asyncio.to_thread(_pull_export_via_ssh_blocking, ip, user, pw)
+    except Exception as e:
+        msg = f"Export failed: {e}"
+        log.error(f"{prop}: {msg}")
+        if progress: progress.done("Error")
+        return prop, {}, {}, msg, msg
+
+    logs: Dict[str, bytes] = {}
+    hotspot: Dict[str, bytes] = {}
+
+    # only if backup role
+    if dev.has_role("backup"):
+        try:
+            logs = await asyncio.to_thread(_pull_hash_logs_blocking, ip, user, pw, delete_remote=delete_remote_logs)
+        except Exception as e:
+            log.warning(f"{prop}: hash log pull failed: {e}")
+        try:
+            hotspot = await asyncio.to_thread(_pull_hotspot_blocking, ip, user, pw)
+        except Exception as e:
+            log.warning(f"{prop}: hotspot pull failed: {e}")
+
+    if progress: progress.done("Done")
+    log.debug(f"{prop}: export + {len(logs)} log(s) + {len(hotspot)} hotspot file(s)")
+    return prop, logs, hotspot, export_text, None
+
+
+# --------- CLI ---------
 
 @click.command("daily-export")
-@click.option("-i", "--inventory", default="propertyinformation.csv",
-              help="CSV: Property,IP,UserEnv,PwEnv")
+@click.option("-I", "--inventory", "inventory_path", default="inventory.csv",
+              help="Unified inventory CSV (Site,Device,MgmtIP,System,Roles,Access,Port,UserEnv,PwEnv,Enabled,Notes).")
 @click.option("-s", "--single", is_flag=True, help="Interactively select properties.")
+@click.option("--roles", default="firewall,export,backup",
+              help="Comma list of roles to include (default: firewall,export,backup).")
 @click.option("--no-email", is_flag=True, help="Email only Eric instead of full distro.")
 @click.option("--keep", is_flag=True, help="Keep local zip (skip cleanup).")
 @click.option("--keep-remote-logs", is_flag=True,
               help="Do NOT delete remote log.N.txt after download (debug/test).")
+@click.option("--concurrency", default=6, show_default=True, type=click.IntRange(1, 64),
+              help="Number of properties to collect in parallel.")
 @click.option("--log-file", default=None)
 @click.option("--log-level", default="INFO",
               type=click.Choice(["DEBUG","INFO","WARNING","ERROR","CRITICAL"]))
-def daily_export_cli(inventory, single, no_email, keep, keep_remote_logs, log_file, log_level):
+def daily_export_cli(inventory_path, single, roles, no_email, keep, keep_remote_logs, concurrency, log_file, log_level):
     """
-    Collect per-property RouterOS artifacts (ETTP firewall sites):
-      - full /export (export.rsc)
-      - log.N.txt (removed after copy, unless --keep-remote-logs)
-      - hotspot/ (if present, recursively; never deleted on device)
-
-    ZIP layout:
-      YYYY-MM-DD_Daily_Exports/<Property>/(export.rsc, hash_logs/, hotspot/)
+    Daily exports with unified inventory + tags:
+      - Exports run for devices matching --roles (default: firewall,export,backup)
+      - Logs + hotspot only when device has the 'backup' role
     """
     setup_logging(level=log_level, log_file=log_file)
     log = get_logger()
     load_env()
 
-    rows = load_inventory(inventory)
-    props = [r[0] for r in rows]
+    # load inventory and select targets
+    devs = load_inventory_csv(inventory_path)
+    role_list = [r.strip().lower() for r in roles.split(",") if r.strip()]
+    targets = select(devs, roles_any=role_list, enabled_only=True)
 
+    # optional interactive filter by Site
     if single:
-        props_sorted = sorted(props, key=str.lower)
-        click.echo("\nSelect properties (comma and ranges allowed):\n")
-        for i, n in enumerate(props_sorted, 1):
+        sites = sorted({d.site for d in targets}, key=str.lower)
+        click.echo("\nSelect sites (comma and ranges allowed):\n")
+        for i, n in enumerate(sites, 1):
             click.echo(f"  {i:2d}. {n}")
         sel = (click.prompt("\nEnter numbers (blank cancels)", default="", show_default=False) or "").strip()
         if not sel:
             click.echo("No selection; exiting.")
             return
-
         def expand(tok, n):
             tok = tok.strip()
             if "-" in tok:
@@ -196,89 +207,58 @@ def daily_export_cli(inventory, single, no_email, keep, keep_remote_logs, log_fi
                     return [i for i in range(max(1,a), min(n,b)+1)]
                 return []
             return [int(tok)] if tok.isdigit() and 1 <= int(tok) <= n else []
-
-        idxs = sorted({i for t in sel.replace(",", " ").split() for i in expand(t, len(props_sorted))})
-        chosen = {props_sorted[i-1].lower() for i in idxs}
-        rows = [r for r in rows if r[0].lower() in chosen]
+        idxs = sorted({i for t in sel.replace(",", " ").split() for i in expand(t, len(sites))})
+        chosen = {sites[i-1].lower() for i in idxs}
+        targets = [d for d in targets if d.site.lower() in chosen]
 
     day = datetime.now().strftime("%Y-%m-%d")
     zip_name = f"{day}_Daily_Exports.zip"
     day_root = f"{day}_Daily_Exports"
 
-    with zipfile.ZipFile(zip_name, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
-        for prop, ip, user_key, pw_key, *rest in rows:
-            log.info(f"→ {prop} ({ip})")
-            try:
-                user, pw = resolve_env(user_key, pw_key)
-            except Exception as e:
-                log.error(f"{prop}: env resolve failed: {e}")
-                _zip_property(zf, day_root, prop, f"Env resolve failed: {e}", {}, {})
-                continue
+    async def _run():
+        results = await run_many_simple(
+            targets,
+            lambda dev, progress=None: _collect_one(dev, delete_remote_logs=not keep_remote_logs, progress=progress),
+            concurrency=concurrency,
+            show_progress=True,
+        )
+        with zipfile.ZipFile(zip_name, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
+            for prop, logs, hotspot, export_text, err in sorted(results, key=lambda x: x[0].lower()):
+                root = f"{day_root}/{prop}"
+                zf.writestr(f"{root}/export.rsc", export_text or "")
+                for name, data in logs.items():
+                    zf.writestr(f"{root}/hash_logs/{name}", data)
+                for rel, data in hotspot.items():
+                    zf.writestr(f"{root}/{rel}", data)
 
-            # SSH connect (for /export and optional deletions)
-            try:
-                ssh = _ssh(ip, user, pw)
-            except Exception as e:
-                log.error(f"{prop}: SSH connect failed: {e}")
-                _zip_property(zf, day_root, prop, f"SSH failed: {e}", {}, {})
-                continue
-
-            try:
-                # Best-effort wide output (some boxes)
-                try:
-                    ssh_exec(ssh, "setline 0")
-                except Exception:
-                    pass
-
-                export_text = _pull_export_via_ssh(ssh)
-
-                # logs via sftp helpers; optionally delete via SSH
-                logs, present = _pull_hash_logs_via_sftp(ssh, ip, user, pw)
-                if present and not keep_remote_logs:
-                    _delete_hash_logs_via_ssh(ssh, present)
-
-                # hotspot folder via sftp helpers (NEVER deleted remotely)
-                hotspot = _pull_hotspot_via_sftp(ssh, ip, user, pw)
-
-                _zip_property(zf, day_root, prop, export_text, logs, hotspot)
-                log.debug(f"{prop}: export + {len(logs)} log(s) + {len(hotspot)} hotspot file(s)")
-
-            except Exception as e:
-                log.error(f"{prop}: collection failed: {e}")
-                _zip_property(zf, day_root, prop, f"Collection failed: {e}", {}, {})
-            finally:
-                try:
-                    ssh.close()
-                except Exception:
-                    pass
-
+    asyncio.run(_run())
     log.info(f"created {zip_name}")
 
-    # upload (per-CLI dest; falls back to FILESERV_PATH)
+    # upload
+   # after creating zip_name
     cfg = FileSvrCfg.from_env()
-    daily_dir = os.getenv("FILESERV_DAILY_EXPORTS_PATH") or os.getenv("FILESERV_PATH", "/mnt/TelcomFS/Daily_Exports")
-    cfg.remote_dir = daily_dir
-    remote_path = upload_to_file_server(Path(zip_name), cfg, remote_dir=daily_dir)
+
+    # this CLI’s subdir (overrideable via env if you want)
+    daily_subdir = os.getenv("FILESERV_DAILY_EXPORTS_SUBDIR", "Daily_Exports_and_Hash_Logs")
+
+    remote_path = upload_to_file_server(Path(zip_name), cfg, subdir=daily_subdir)
     log.info(f"uploaded to {remote_path}")
 
-    # Decide if attachment is safe (Gmail blocks .js/.exe/... even inside zips)
+
+    # Gmail-safe email (unchanged)
     DISALLOWED = {".exe", ".dll", ".js", ".cmd", ".bat", ".sh", ".reg", ".msi", ".vbs", ".jar", ".scr", ".ps1"}
     contains_disallowed = False
-
     try:
         with zipfile.ZipFile(zip_name, "r") as src:
             for zi in src.infolist():
                 zpath = zi.filename.replace("\\", "/").lower()
                 ext = Path(zpath).suffix.lower()
-                # block if any disallowed extension OR any hotspot file
                 if "/hotspot/" in zpath or ext in DISALLOWED:
                     contains_disallowed = True
                     break
     except Exception:
-        # If we can't inspect, play it safe and send link-only.
         contains_disallowed = True
 
-    # If unsafe, build a trimmed zip with only export + logs (no hotspot, no disallowed)
     sanitized_zip: Path | None = None
     if contains_disallowed:
         safe_name = Path(f"{Path(zip_name).stem}_SAFE.zip")
@@ -292,34 +272,27 @@ def daily_export_cli(inventory, single, no_email, keep, keep_remote_logs, log_fi
                 dst.writestr(zpath, src.read(zi))
         sanitized_zip = safe_name
 
-    # Email: --no-email still emails Eric only
     sender = os.getenv("GMAIL_USER", "")
     app_pw = os.getenv("GMAIL_APP_PASSWORD", "")
     subj = f"{day} Daily Exports"
-    body_lines = [
-        f"Daily exports for {day}",
-        f"Uploaded to: {remote_path}",
-    ]
+    body_lines = [f"Daily exports for {day}", f"Uploaded to: {remote_path}"]
     if contains_disallowed:
         body_lines.append("Note: Attachment omitted due to Gmail security policy (hotspot assets or disallowed file types).")
     body = "\n".join(body_lines)
 
-    recipients = ["eshortt@telcomsys.net"] if no_email else [
+    recipients = ["eshortt84@gmail.com"] if no_email else [
         "eshortt@telcomsys.net",
         "jedwards@ripheat.com",
         "rkammerman@ripheat.com",
     ]
-
     try:
         if not contains_disallowed:
-            # full zip is safe to attach
             send_email_with_attachment(
                 sender, app_pw, os.getenv("SMTP_HOST", "smtp.gmail.com"),
                 int(os.getenv("SMTP_PORT", "587")),
                 recipients, subj, body, Path(zip_name)
             )
         else:
-            # attach the sanitized zip if we created one; otherwise fall back to link-only via tiny txt
             if sanitized_zip and sanitized_zip.exists():
                 send_email_with_attachment(
                     sender, app_pw, os.getenv("SMTP_HOST", "smtp.gmail.com"),
@@ -327,7 +300,6 @@ def daily_export_cli(inventory, single, no_email, keep, keep_remote_logs, log_fi
                     recipients, subj, body, sanitized_zip
                 )
             else:
-                # Fallback: send a tiny .txt attachment with the link
                 link_note = Path("EXPORT_LINK.txt")
                 link_note.write_text(body, encoding="utf-8")
                 send_email_with_attachment(
@@ -335,19 +307,15 @@ def daily_export_cli(inventory, single, no_email, keep, keep_remote_logs, log_fi
                     int(os.getenv("SMTP_PORT", "587")),
                     recipients, subj, body, link_note
                 )
-                try:
-                    link_note.unlink(missing_ok=True)
-                except Exception:
-                    pass
+                try: link_note.unlink(missing_ok=True)
+                except Exception: pass
         log.info(f"email sent to {', '.join(recipients)}")
     except Exception as e:
         log.error(f"email failed: {e}")
 
     if not keep:
-        try:
-            Path(zip_name).unlink(missing_ok=True)
-        except Exception:
-            pass
+        try: Path(zip_name).unlink(missing_ok=True)
+        except Exception: pass
         log.info("cleaned local zip; remote copy retained")
     else:
         log.info("kept local zip per --keep")
