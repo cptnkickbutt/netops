@@ -176,7 +176,7 @@ def speed_audit_cli(inventory_path, roles, single, concurrency, progress, quiet,
 
     recipients = (
         ["eshortt@telcomsys.net"] if no_email else
-        ["eshortt@telcomsys.net", "jedwards@ripheat.com", "rkammerman@ripheat.com"]
+        ["eshortt@telcomsys.net", "speters@telcomsys.net", "dripley@ripheat.com"]
     )
 
     try:

@@ -83,7 +83,7 @@ class GPONSystem:
         self.r = runner
 
     async def get_info(self, progress: Optional[SiteProgress] = None) -> List[List[str]]:
-        final: List[List[str]] = [['Identity', 'Serial/Mac', 'Speed', 'Status', 'Notes']]
+        final: List[List[str]] = [['Identity', 'Mac/Serial', 'Speed', 'Status', 'Notes']]
 
         user, pw = resolve_env(self.site.user_env, self.site.pw_env)
 
