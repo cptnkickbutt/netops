@@ -14,7 +14,7 @@ class DSLSystem:
         self.r = runner
 
     async def get_info(self, progress: Optional[SiteProgress] = None) -> list[list[str]]:
-        final_list = [['Identity', 'Serial/Mac', 'Speed', 'Status']]
+        final_list = [['Identity', 'Mac/Serial', 'Speed', 'Status']]
 
         user, pw = resolve_env(self.site.user_env, self.site.pw_env)
 

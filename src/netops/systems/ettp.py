@@ -47,6 +47,30 @@ class ETTPSystem:
             except Exception:
                 pass
 
+    # ---------- helpers ----------
+    @staticmethod
+    def _normalize_simple_export(text: str) -> str:
+        """Join backslash-continued lines from '/queue simple export'."""
+        return re.sub(r'\\\r?\n\s*', ' ', text.strip())
+
+    @staticmethod
+    def _internet_queue_disabled_from_simple(qtext_simple: str) -> bool:
+        """
+        Returns True if the Internet queue is disabled based on '/queue simple export'.
+        We look for 'add ... disabled=yes ... name=Internet' OR matching target=Bridge_Internet.
+        """
+        t = ETTPSystem._normalize_simple_export(qtext_simple)
+        add_lines = [m.group(0) for m in re.finditer(r'(?m)^\s*add\b[^\n]*', t)]
+        # Prefer explicit name=Internet if multiple match
+        candidates = [ln for ln in add_lines
+                      if re.search(r'\bname="?Internet"?\b', ln) or re.search(r'\btarget=Bridge_Internet\b', ln)]
+        if not candidates:
+            return False
+        candidates.sort(key=lambda s: 0 if re.search(r'\bname="?Internet"?\b', s) else 1)
+        rule = candidates[0]
+        m = re.search(r'\bdisabled=(yes|no)\b', rule)
+        return bool(m and m.group(1) == 'yes')
+
     async def _get_neighbors_df(self) -> pd.DataFrame:
         # Prefer script if present
         script_path = Path("getNeighbors2.rsc")
@@ -96,19 +120,24 @@ class ETTPSystem:
 
             try:
                 muser, mpass = self.cuser, self.cpass
-                # Run both commands on one connection in a worker thread for efficiency
-                [(qtext, _, _), (itext, _, _)] = await asyncio.to_thread(
+                # NEW: grab simple export (for disabled check), verbose (for rate parsing), and ethernet
+                [(qsimple, _, _), (qverb, _, _), (itext, _, _)] = await asyncio.to_thread(
                     self._ssh_exec_many,
                     str(modem_ip), muser, mpass,
-                    ['/queue simple export verbose', '/interface ethernet export']
+                    ['/queue simple export', '/queue simple export verbose', '/interface ethernet export']
                 )
 
-                rules = parse_queue_export_verbose(qtext)
-                queue_rate = next((rt for rt in (rate_from_rule(r) for r in rules) if rt), "1000 Mbps")
+                # If Internet queue disabled in simple export => force 1000 Mbps
+                if self._internet_queue_disabled_from_simple(qsimple):
+                    queue_rate = "1000 Mbps"
+                else:
+                    # Original behavior: parse verbose and pick first rate
+                    rules = parse_queue_export_verbose(qverb)
+                    queue_rate = next((rt for rt in (rate_from_rule(r) for r in rules) if rt), "1000 Mbps")
 
+                # Prefer ethernet-reported link speed, mark with '*'
                 hw = re.findall(r'\bspeed=(\d+Mbps)\b', itext)
                 if hw:
-                    # If ethernet reports a specific speed, prefer it and mark with *
                     queue_rate = f"{hw[0]}*"
 
                 results.append([identity, mac, queue_rate, 'Active'])
