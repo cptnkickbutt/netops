@@ -422,7 +422,7 @@ def daily_export_cli(inventory_path, single, roles, no_email, keep, keep_remote_
     recipients = ["eshortt@telcomsys.net"] if no_email else [
         "eshortt@telcomsys.net",
         "jedwards@ripheat.com",
-        "rkammerman@ripheat.com",
+        "rkammerman@telcomsys.net",
     ]
 
     try:
