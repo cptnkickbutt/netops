@@ -55,3 +55,23 @@
 - `telnet.py` no longer uses stdlib telnetlib (removed in Py 3.13)
 - Updated `__init__.py` re-exports for both sync/async APIs
 - Bumped dependency: added `telnetlib3`
+
+
+## v0.4.0 - 2026-02-13
+- Many changes that I failed to keep track of
+- Optimizations to existing cli commands
+- creation of mass-config that works to a degree, but still needs a lot of work
+
+## v0.4.1 - 2026-02-17
+
+### ✨ Added
+- New `pw-gen` CLI command for password generation.
+- Supports random policy OR token-based formats (u/l/n/s).
+- Generate multiple passwords with configurable length and count.
+- Output to screen, TXT, CSV, or XLSX.
+- XLSX export now uses the shared Excel helper (TOC + auto-fit columns).
+- Ability to append/fill passwords into existing CSV or XLSX files.
+
+### ♻️ Internal
+- Reused `security.passwords` helper as standalone CLI utility.
+- Integrated Excel helper for consistent workbook formatting.
