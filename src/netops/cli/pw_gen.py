@@ -280,7 +280,7 @@ def _append_passwords_to_xlsx(
 )
 @click.option(
     "--append-column",
-    default="password",
+    default="Password",
     show_default=True,
     help="Column name to create/fill when using --append-to.",
 )

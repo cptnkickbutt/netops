@@ -75,3 +75,13 @@
 ### ♻️ Internal
 - Reused `security.passwords` helper as standalone CLI utility.
 - Integrated Excel helper for consistent workbook formatting.
+
+
+## v0.4.2 - 2026-02-18
+
+### Changed
+- Capitalize default column name in pw-gen
+
+### ✨ Added
+- Added /scripts directory for standalone scripts, related to, but not necessarily part of package.
+- added callrec_cleanup.py to scripts to clean up file server entries that vendor just dumps in root directory and removing files older than 2y
