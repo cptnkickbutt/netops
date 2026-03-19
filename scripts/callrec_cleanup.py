@@ -499,7 +499,7 @@ def cfg_from_env(logger: logging.Logger) -> Tuple[SFTPConfig, PathsConfig, int]:
         vip_root=join_remote(base_dir, vip_root_rel) if vip_root_rel else None,
     )
 
-    retention_years = int(os.getenv("CALLREC_RETENTION_YEARS", "2"))
+    retention_years = int(os.getenv("CALLREC_RETENTION_YEARS", "3"))
     keep_days = retention_years * 365
 
     logger.info("Resolved CX source: %s", paths.cx_source_dir)

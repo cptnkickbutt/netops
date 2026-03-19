@@ -135,7 +135,7 @@ def _collect_one_blocking(dev: Device, *, delete_remote_logs: bool) -> Tuple[str
 
         # --- EXPORT ---
         try:
-            ssh_exec(ssh, r'/export file="__netops_export__"')
+            ssh_exec(ssh, r'/export show-sensitive file="__netops_export__"')
         except Exception as e:
             msg = f"Export failed: {e}"
             log.error(f"{prop}: {msg}")
