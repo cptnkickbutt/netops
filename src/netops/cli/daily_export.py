@@ -1,7 +1,7 @@
-# src/netops/cli/daily_export.py
 from __future__ import annotations
 
 import os
+import re
 import zipfile
 from pathlib import Path
 from datetime import datetime
@@ -106,6 +106,74 @@ def _sftp_walk_read_all_files(sftp, base: str) -> Dict[str, bytes]:
     return normalized
 
 
+def _parse_ros_major(version_text: str) -> Optional[int]:
+    """
+    Parse major RouterOS version from strings like:
+      6.49.10
+      7.18.2
+      7.19rc1
+      7.20beta3
+    Returns the major version integer, or None if not parseable.
+    """
+    if not version_text:
+        return None
+
+    m = re.search(r"(\d+)", version_text.strip())
+    if not m:
+        return None
+
+    try:
+        return int(m.group(1))
+    except Exception:
+        return None
+
+
+def _get_ros_version(ssh) -> Tuple[Optional[str], Optional[int]]:
+    try:
+        out = ssh_exec(ssh, "/system resource print")
+
+        # --- FIX: normalize ssh_exec return ---
+        if isinstance(out, tuple):
+            out = out[0]  # assume stdout is first element
+
+        if not isinstance(out, str):
+            return None, None
+
+    except Exception:
+        return None, None
+
+    version_text: Optional[str] = None
+    for line in out.splitlines():
+        line = line.strip()
+        if line.lower().startswith("version:"):
+            version_text = line.split(":", 1)[1].strip()
+            break
+
+    if not version_text:
+        return None, None
+
+    return version_text, _parse_ros_major(version_text)
+
+
+def _build_export_command(ssh, prop: str) -> str:
+    """
+    Use show-sensitive on RouterOS v7+ only.
+    Fall back to plain export on v6 or if version detection fails.
+    """
+    log = get_logger()
+    version_text, major = _get_ros_version(ssh)
+
+    if major is not None:
+        log.debug(f"{prop}: detected RouterOS version={version_text} major={major}")
+    else:
+        log.warning(f"{prop}: could not determine RouterOS version; falling back to plain export")
+
+    if major is not None and major >= 7:
+        return r'/export show-sensitive file="__netops_export__"'
+
+    return r'/export file="__netops_export__"'
+
+
 def _collect_one_blocking(dev: Device, *, delete_remote_logs: bool) -> Tuple[str, Dict[str, bytes], Dict[str, bytes], Dict[str, bytes], str, Optional[str]]:
     """
     Single-connection collector:
@@ -135,7 +203,9 @@ def _collect_one_blocking(dev: Device, *, delete_remote_logs: bool) -> Tuple[str
 
         # --- EXPORT ---
         try:
-            ssh_exec(ssh, r'/export show-sensitive file="__netops_export__"')
+            export_cmd = _build_export_command(ssh, prop)
+            log.debug(f"{prop}: running export command: {export_cmd}")
+            ssh_exec(ssh, export_cmd)
         except Exception as e:
             msg = f"Export failed: {e}"
             log.error(f"{prop}: {msg}")
