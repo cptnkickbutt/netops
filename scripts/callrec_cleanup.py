@@ -500,7 +500,9 @@ def cfg_from_env(logger: logging.Logger) -> Tuple[SFTPConfig, PathsConfig, int]:
     vip_root_rel = os.getenv("CALLREC_VIP_ROOT", "WIOGEN-TS").strip()
 
     def resolve_under(base: str, value: str) -> str:
-        value = value.strip()
+        value = (value or "").strip()
+        if not value:
+            return normalize_remote_path(base)   # 👈 key fix
         if value.startswith("/"):
             return normalize_remote_path(value)
         return join_remote(base, value)
