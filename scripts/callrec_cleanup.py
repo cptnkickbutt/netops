@@ -463,7 +463,7 @@ def cfg_from_env(logger: logging.Logger) -> Tuple[SFTPConfig, PathsConfig, int]:
     host = os.getenv("FILESERV_HOST", "").strip()
     user = os.getenv("FILESERV_USER", "").strip()
     password = os.getenv("FILESERV_PASSWORD")
-    base_dir = os.getenv("FILESERV_BASE_DIR", "").strip()
+    fileserv_base_dir = os.getenv("FILESERV_BASE_DIR", "").strip()
 
     if not host:
         raise ValueError("Missing FILESERV_HOST in .env")
@@ -471,10 +471,10 @@ def cfg_from_env(logger: logging.Logger) -> Tuple[SFTPConfig, PathsConfig, int]:
         raise ValueError("Missing FILESERV_USER in .env")
     if not password and not os.getenv("FILESERV_PKEY"):
         raise ValueError("Missing FILESERV_PASSWORD (or FILESERV_PKEY) in .env")
-    if not base_dir:
+    if not fileserv_base_dir:
         raise ValueError("Missing FILESERV_BASE_DIR in .env (e.g. /mnt/TelcomFS/)")
 
-    base_dir = base_dir.rstrip("/")
+    fileserv_base_dir = fileserv_base_dir.rstrip("/")
 
     sftp_cfg = SFTPConfig(
         host=host,
@@ -488,24 +488,38 @@ def cfg_from_env(logger: logging.Logger) -> Tuple[SFTPConfig, PathsConfig, int]:
         connect_timeout_s=int(os.getenv("FILESERV_TIMEOUT", "15")),
     )
 
-    # Call recordings paths (relative to base_dir by default)
-    cx_source_rel = os.getenv("CALLREC_CX_SOURCE", "File_Server/Call_Recordings").strip()
-    cx_root_rel = os.getenv("CALLREC_CX_ROOT", "WIOGEN-CX").strip()  # <-- requested hyphen name
+    # Separate base for call recordings so they stay under /mnt/TelcomFS/Call_Recordings
+    callrec_base_dir = os.getenv(
+        "CALLREC_BASE_DIR",
+        join_remote(fileserv_base_dir, "Call_Recordings"),
+    ).strip().rstrip("/")
+
+    # Source folder is relative to CALLREC_BASE_DIR unless absolute
+    cx_source_rel = os.getenv("CALLREC_CX_SOURCE", "incoming").strip()
+    cx_root_rel = os.getenv("CALLREC_CX_ROOT", "WIOGEN-CX").strip()
     vip_root_rel = os.getenv("CALLREC_VIP_ROOT", "WIOGEN-TS").strip()
 
+    def resolve_under(base: str, value: str) -> str:
+        value = value.strip()
+        if value.startswith("/"):
+            return normalize_remote_path(value)
+        return join_remote(base, value)
+
     paths = PathsConfig(
-        cx_source_dir=join_remote(base_dir, cx_source_rel),
-        cx_root=join_remote(base_dir, cx_root_rel),
-        vip_root=join_remote(base_dir, vip_root_rel) if vip_root_rel else None,
+        cx_source_dir=resolve_under(callrec_base_dir, cx_source_rel),
+        cx_root=resolve_under(callrec_base_dir, cx_root_rel),
+        vip_root=resolve_under(callrec_base_dir, vip_root_rel) if vip_root_rel else None,
     )
 
     retention_years = int(os.getenv("CALLREC_RETENTION_YEARS", "3"))
     keep_days = retention_years * 365
 
-    logger.info("Resolved CX source: %s", paths.cx_source_dir)
-    logger.info("Resolved CX root:   %s", paths.cx_root)
+    logger.info("Resolved file server base: %s", fileserv_base_dir)
+    logger.info("Resolved callrec base:     %s", callrec_base_dir)
+    logger.info("Resolved CX source:       %s", paths.cx_source_dir)
+    logger.info("Resolved CX root:         %s", paths.cx_root)
     if paths.vip_root:
-        logger.info("Resolved VIP root:  %s", paths.vip_root)
+        logger.info("Resolved VIP root:        %s", paths.vip_root)
     logger.info("Retention: %d years (~%d days)", retention_years, keep_days)
 
     return sftp_cfg, paths, keep_days
