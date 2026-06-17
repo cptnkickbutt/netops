@@ -16,6 +16,7 @@ import click
 from ..inventory import load_inventory_csv, select, Device
 from ..config import load_env, resolve_env
 from ..logging import setup_logging, get_logger
+from ..paths import generated_file_path
 from ..transports.ssh import make_ssh_client, ssh_exec
 
 
@@ -635,7 +636,8 @@ def wg_radius_rollout_cli(
     results = asyncio.run(_run_all())
 
     day = datetime.now().strftime("%Y-%m-%d")
-    out_csv = Path(f"{day}_wg_radius_rollout_summary.csv")
+    out_csv = generated_file_path(f"{day}_wg_radius_rollout_summary.csv")
+    out_csv.parent.mkdir(parents=True, exist_ok=True)
     with out_csv.open("w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
         w.writerow(["site", "mgmt_ip", "wg_ip", "router_public_key", "ok", "error"])
@@ -645,7 +647,8 @@ def wg_radius_rollout_cli(
     log.info(f"Wrote CSV: {out_csv}")
 
     if export_core_peers:
-        peers_path = Path(core_peers_file) if core_peers_file else Path(f"{day}_radius-core_wg_peers.conf")
+        peers_path = Path(core_peers_file) if core_peers_file else generated_file_path(f"{day}_radius-core_wg_peers.conf")
+        peers_path.parent.mkdir(parents=True, exist_ok=True)
         peers_path.write_text(_build_core_peers_block(results), encoding="utf-8")
         log.info(f"Wrote local peers snippet file: {peers_path}")
 

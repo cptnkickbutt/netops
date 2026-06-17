@@ -15,6 +15,7 @@ from ..config import load_env, resolve_env, FileSvrCfg
 from ..logging import setup_logging, get_logger
 from ..uploader import upload_to_file_server, remove_from_file_server
 from ..emailer import send_email_with_attachment
+from ..paths import generated_file_path
 from ..transports.ssh import make_ssh_client, ssh_exec
 
 
@@ -378,7 +379,8 @@ def daily_export_cli(inventory_path, single, roles, no_email, keep, keep_remote_
         targets = [d for d in targets if d.site.lower() in chosen]
 
     day = datetime.now().strftime("%Y-%m-%d")
-    zip_name = f"{day}_Daily_Exports.zip"
+    zip_path = generated_file_path(f"{day}_Daily_Exports.zip")
+    zip_path.parent.mkdir(parents=True, exist_ok=True)
     day_root = f"{day}_Daily_Exports"
 
     async def _run() -> List[Tuple[str, Dict[str, bytes], Dict[str, bytes], Dict[str, bytes], str, Optional[str]]]:
@@ -400,7 +402,7 @@ def daily_export_cli(inventory_path, single, roles, no_email, keep, keep_remote_
             for fut in asyncio.as_completed(tasks):
                 results.append(await fut)
 
-        with zipfile.ZipFile(zip_name, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
+        with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
             for prop, hash_logs, changelog_logs, hotspot, export_text, err in sorted(results, key=lambda x: x[0].lower()):
                 root = f"{day_root}/{prop}"
                 zf.writestr(f"{root}/export.rsc", export_text or "")
@@ -414,7 +416,7 @@ def daily_export_cli(inventory_path, single, roles, no_email, keep, keep_remote_
         return results
 
     results = asyncio.run(_run())
-    log.info(f"created {zip_name}")
+    log.info(f"created {zip_path}")
 
     # ----- summary -----
     ok = [r for r in results if not r[5]]
@@ -438,7 +440,7 @@ def daily_export_cli(inventory_path, single, roles, no_email, keep, keep_remote_
     cfg = FileSvrCfg.from_env()
     daily_subdir = os.getenv("FILESERV_DAILY_EXPORTS_SUBDIR", "Daily_Exports_and_Hash_Logs")
 
-    remote_path = upload_to_file_server(Path(zip_name), cfg, subdir=daily_subdir)
+    remote_path = upload_to_file_server(zip_path, cfg, subdir=daily_subdir)
     log.info(f"uploaded to {remote_path}")
 
     # testing: remove remote zip immediately
@@ -452,7 +454,7 @@ def daily_export_cli(inventory_path, single, roles, no_email, keep, keep_remote_
     DISALLOWED = {".exe", ".dll", ".js", ".cmd", ".bat", ".sh", ".reg", ".msi", ".vbs", ".jar", ".scr", ".ps1"}
     contains_disallowed = False
     try:
-        with zipfile.ZipFile(zip_name, "r") as src:
+        with zipfile.ZipFile(zip_path, "r") as src:
             for zi in src.infolist():
                 zpath = zi.filename.replace("\\", "/").lower()
                 ext = Path(zpath).suffix.lower()
@@ -463,10 +465,10 @@ def daily_export_cli(inventory_path, single, roles, no_email, keep, keep_remote_
         contains_disallowed = True
 
     sanitized_zip: Path | None = None
-    safe_name = Path(f"{Path(zip_name).stem}_SAFE.zip")
+    safe_name = zip_path.with_name(f"{zip_path.stem}_SAFE.zip")
 
     if contains_disallowed:
-        with zipfile.ZipFile(zip_name, "r") as src, zipfile.ZipFile(
+        with zipfile.ZipFile(zip_path, "r") as src, zipfile.ZipFile(
             safe_name, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6
         ) as dst:
             for zi in src.infolist():
@@ -500,7 +502,7 @@ def daily_export_cli(inventory_path, single, roles, no_email, keep, keep_remote_
             send_email_with_attachment(
                 sender, app_pw, os.getenv("SMTP_HOST", "smtp.gmail.com"),
                 int(os.getenv("SMTP_PORT", "587")),
-                recipients, subj, body, Path(zip_name)
+                recipients, subj, body, zip_path
             )
         else:
             if sanitized_zip and sanitized_zip.exists():
@@ -510,7 +512,7 @@ def daily_export_cli(inventory_path, single, roles, no_email, keep, keep_remote_
                     recipients, subj, body, sanitized_zip
                 )
             else:
-                link_note = Path("EXPORT_LINK.txt")
+                link_note = generated_file_path("EXPORT_LINK.txt")
                 link_note.write_text(body, encoding="utf-8")
                 send_email_with_attachment(
                     sender, app_pw, os.getenv("SMTP_HOST", "smtp.gmail.com"),
@@ -527,7 +529,7 @@ def daily_export_cli(inventory_path, single, roles, no_email, keep, keep_remote_
 
     # local cleanup (delete BOTH normal + _SAFE zips unless --keep)
     if not keep:
-        for p in (Path(zip_name), safe_name):
+        for p in (zip_path, safe_name):
             try:
                 p.unlink(missing_ok=True)
             except Exception as e:

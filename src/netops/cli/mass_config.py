@@ -25,6 +25,7 @@ import pandas as pd
 
 from netops.config import load_env, resolve_env
 from netops.logging import setup_logging, get_logger
+from netops.paths import generated_file_path
 from netops.transports.ssh import make_ssh_client, ssh_exec
 
 
@@ -223,6 +224,7 @@ async def _mode_collect(
     """
     log = get_logger()
     out = Path(output_csv)
+    out.parent.mkdir(parents=True, exist_ok=True)
     rows = []
     for s in sites:
         rows.append(
@@ -266,6 +268,7 @@ def _mode_build(
 
     if single_output:
         out = Path(single_output)
+        out.parent.mkdir(parents=True, exist_ok=True)
         parts: list[str] = []
         for _, r in df.iterrows():
             parts.append(_render_template(template_text, r.to_dict()))
@@ -447,9 +450,8 @@ import sys  # placed here to keep helpers above clean
 @click.option(
     "--output-csv",
     type=click.Path(dir_okay=False),
-    default="mass_config_devices.csv",
-    show_default=True,
-    help="Where to write devices CSV in collect mode.",
+    default=None,
+    help="Where to write devices CSV in collect mode. Defaults to files/mass_config_devices.csv.",
 )
 @click.option(
     "--template",
@@ -545,6 +547,7 @@ def mass_config_cli(
     )
     log = get_logger()
     load_env()
+    output_csv = output_csv or str(generated_file_path("mass_config_devices.csv"))
 
     inv_df = _read_inventory(inventory)
     wanted_systems = {s.strip().upper() for s in systems if s and s.strip()} if systems else set()  # empty=set => include all

@@ -1,13 +1,21 @@
 
-import re, pandas as pd
+from __future__ import annotations
+
+import re
+from pathlib import Path
+
+import pandas as pd
 
 def safe_sheet_name(name: str) -> str:
     bad = r'[:\\/*?[\]]'
     s = re.sub(bad, "_", name)
     return s[:31] if len(s) > 31 else s
 
-def write_workbook(filename: str, results: list[tuple[str,str,pd.DataFrame]]) -> None:
-    with pd.ExcelWriter(filename, engine="xlsxwriter") as writer:
+def write_workbook(filename: str | Path, results: list[tuple[str, str, pd.DataFrame]]) -> None:
+    path = Path(filename)
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    with pd.ExcelWriter(path, engine="xlsxwriter") as writer:
         wb = writer.book
         toc = wb.add_worksheet("Table_of_Contents")
         writer.sheets["Table_of_Contents"] = toc
@@ -27,7 +35,7 @@ def write_workbook(filename: str, results: list[tuple[str,str,pd.DataFrame]]) ->
                 except Exception:
                     max_len = len(str(col))
                 ws.set_column(i, i, max_len + 2)
-            ws.write_url("A1", "internal:'Table_of_Contents'!A1", link_fmt, "← Back to TOC")
+            ws.write_url("A1", "internal:'Table_of_Contents'!A1", link_fmt, "Back to TOC")
             toc.write_url(f"A{toc_row}", f"internal:'{sheet}'!A1", link_fmt, prop)
             toc.write(f"B{toc_row}", system)
             toc_row += 1

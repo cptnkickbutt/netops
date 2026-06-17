@@ -6,7 +6,6 @@ import asyncio
 import time
 from datetime import date
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Literal
 
 import click
@@ -17,6 +16,7 @@ from ..excel import write_workbook
 from ..orchestrator import run_many
 from ..uploader import upload_to_file_server
 from ..emailer import send_email_with_attachment
+from ..paths import generated_file_path
 
 # unified inventory
 from ..inventory import load_inventory_csv, select, Device
@@ -158,14 +158,14 @@ def speed_audit_cli(inventory_path, roles, single, concurrency, progress, quiet,
     ))
 
     # Write workbook
-    fname = f"{date.today():%Y_%m_%d}_Speed_Audit.xlsx"
+    fname = generated_file_path(f"{date.today():%Y_%m_%d}_Speed_Audit.xlsx")
     write_workbook(fname, results)
     log.info(f"Wrote {fname}")
 
     # Upload to file server subdir
     cfg = FileSvrCfg.from_env()
     audit_subdir = os.getenv("FILESERV_SPEED_AUDIT_SUBDIR", "Speed_Audit")
-    remote_path = upload_to_file_server(Path(fname), cfg, subdir=audit_subdir)
+    remote_path = upload_to_file_server(fname, cfg, subdir=audit_subdir)
     log.info(f"Uploaded to {remote_path}")
 
     # Email
@@ -185,11 +185,11 @@ def speed_audit_cli(inventory_path, roles, single, concurrency, progress, quiet,
             send_email_with_attachment,
             sender, pw, os.getenv("SMTP_HOST", "smtp.gmail.com"),
             int(os.getenv("SMTP_PORT", "587")),
-            recipients, subj, body, Path(fname)
+            recipients, subj, body, fname
         ))
         log.info(f"Email sent to {', '.join(recipients)}")
     except Exception as e:
         log.error(f"Email failed: {e}")
 
     m, s = divmod(time.time() - start, 60)
-    log.info(f"Done in {int(m)}:{s:.2f} min — wrote {fname}")
+    log.info(f"Done in {int(m)}:{s:.2f} min - wrote {fname}")

@@ -1,6 +1,6 @@
 [project]
 name = "netops"
-version = "0.4.2"
+version = "0.5.0"
 description = "Network operations tooling (Mikrotik, Omada, Speed Audit, etc.)"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -8,7 +8,11 @@ dependencies = [
   "paramiko",
   "python-dotenv",
   "click",
-  "telnetlib3"
+  "telnetlib3",
+  "pandas",
+  "numpy",
+  "xlsxwriter",
+  "tqdm"
 ]
 
 [project.scripts]
@@ -39,7 +43,7 @@ version_variables = [
 
 [tool.commitizen]
 name = "cz_conventional_commits"
-version = "0.4.2"
+version = "0.5.0"
 tag_format = "v$version"
 update_changelog_on_bump = true
 changelog_file = "CHANGELOG.md"
