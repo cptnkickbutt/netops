@@ -30,10 +30,39 @@ def parse_network(s: str, prefix: int) -> ipaddress.IPv4Network:
         return n
     return ipaddress.ip_network(f"{s}/{prefix}", strict=True)
 
-def nth_subnet(base: ipaddress.IPv4Network, n: int, prefix: int) -> ipaddress.IPv4Network:
+def nth_subnet(base, a: int, b: int) -> ipaddress.IPv4Network:
+    """
+    Return the Nth subnet.
+
+    Supports both call styles used in this package:
+
+      nth_subnet(base_network, index, prefix)
+      nth_subnet(base_net_string, prefix, index)
+
+    Examples:
+      nth_subnet(ipaddress.ip_network("192.168.10.0/26"), 0, 26)
+      nth_subnet("192.168.10.0", 26, 0)
+    """
+    if isinstance(base, str):
+        # Legacy/caller style from scripts/subnet.py:
+        # nth_subnet(base_net, prefix, index)
+        prefix = int(a)
+        n = int(b)
+        base_network = parse_network(base, prefix)
+    else:
+        # Helper/internal style:
+        # nth_subnet(base_network, index, prefix)
+        base_network = base
+        n = int(a)
+        prefix = int(b)
+
     step = 1 << (32 - prefix)
-    start_int = int(base.network_address) + (n * step)
-    return ipaddress.ip_network((ipaddress.IPv4Address(start_int), prefix), strict=True)
+    start_int = int(base_network.network_address) + (n * step)
+
+    return ipaddress.ip_network(
+        (ipaddress.IPv4Address(start_int), prefix),
+        strict=True,
+    )
 
 def describe_subnet(
     net: ipaddress.IPv4Network,

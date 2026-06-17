@@ -28,6 +28,7 @@ class Device:
     pw_env: str
     enabled: bool
     notes: str = ""
+    abbr: str = ""
 
     def has_role(self, role: str) -> bool:
         r = _norm(role).lower()
@@ -56,7 +57,8 @@ def load_inventory_csv(path: str | Path) -> List[Device]:
             penv   = _norm_key(row.get("PwEnv",""))
             enabled= (_norm(row.get("Enabled","yes")).lower() in {"yes","true","1"})
             notes  = _norm(row.get("Notes",""))
-            out.append(Device(site, device, ip, system, roles, access, port, uenv, penv, enabled, notes))
+            abbr   = _norm(row.get("Abbr", ""))
+            out.append(Device(site, device, ip, system, roles, access, port, uenv, penv, enabled, notes, abbr))
     return out
 
 def select(devs: Iterable[Device], *, systems: Optional[List[str]] = None,

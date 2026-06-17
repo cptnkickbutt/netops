@@ -10,7 +10,9 @@ import click
 
 from netops.security.passwords import (
     PasswordPolicy,
+    MemorablePasswordPolicy,
     generate_password,
+    generate_memorable_password,
     parse_format,
     DEFAULT_SYMBOLS,
     DIGITS_0_9,
@@ -86,7 +88,7 @@ def _write_csv(path: Path, passwords: List[str], header: str = "password") -> No
             w.writerow({header: pw})
 
 
-def _write_xlsx(path: Path, passwords: List[str]) -> None:
+def _write_xlsx(path: Path, passwords: List[str], sheet: str = "passwords", header: str = "password") -> None:
     import pandas as pd
     from netops.excel import write_workbook  # your helper
 
@@ -95,12 +97,12 @@ def _write_xlsx(path: Path, passwords: List[str]) -> None:
     df = pd.DataFrame(
         {
             "index": list(range(1, len(passwords) + 1)),
-            "password": passwords,
+            header: passwords,
         }
     )
 
     # write_workbook expects: list[tuple[prop, system, df]]
-    results = [("Passwords", "pw-gen", df)]
+    results = [(sheet, "pw-gen", df)]
     write_workbook(str(path), results)
 
 
@@ -216,6 +218,30 @@ def _append_passwords_to_xlsx(
 
 @click.command("pw-gen")
 @click.option(
+    "--style",
+    type=click.Choice(["random", "memorable"], case_sensitive=False),
+    default="random",
+    show_default=True,
+    help="Password style. 'memorable' generates adjective+noun+numbers with random caps/substitutions.",
+)
+@click.option("--word-min-numbers", type=int, default=3, show_default=True, help="Minimum trailing digits for --style memorable.")
+@click.option("--word-max-numbers", type=int, default=5, show_default=True, help="Maximum trailing digits for --style memorable.")
+@click.option("--word-separator", default="", show_default=True, help="Separator between adjective and noun for --style memorable.")
+@click.option(
+    "--word-substitution-chance",
+    type=click.FloatRange(0, 1),
+    default=0.45,
+    show_default=True,
+    help="Chance each eligible letter is converted to a symbol/number for --style memorable.",
+)
+@click.option(
+    "--word-uppercase-chance",
+    type=click.FloatRange(0, 1),
+    default=0.35,
+    show_default=True,
+    help="Chance each letter is capitalized for --style memorable.",
+)
+@click.option(
     "-f",
     "--format",
     "fmt",
@@ -298,6 +324,12 @@ def _append_passwords_to_xlsx(
     help="(XLSX) Header row index.",
 )
 def pw_gen_cli(
+    style: str,
+    word_min_numbers: int,
+    word_max_numbers: int,
+    word_separator: str,
+    word_substitution_chance: float,
+    word_uppercase_chance: float,
     fmt: Optional[str],
     length: int,
     count: int,
@@ -316,13 +348,25 @@ def pw_gen_cli(
     header_row: int,
 ) -> None:
     """
-    Generate passwords using netops.security.passwords.generate_password().
+    Generate passwords using netops.security.passwords.
+
+    Default style is fully random. Use --style memorable for Netgear-ish
+    adjective+noun+numbers passwords with substitutions and random caps.
     """
 
     if count <= 0:
         raise click.ClickException("--count/--amount must be > 0.")
     if length <= 0:
         raise click.ClickException("--length must be > 0.")
+
+    style = style.lower()
+
+    if style == "memorable" and fmt:
+        raise click.ClickException("--format cannot be combined with --style memorable.")
+    if word_min_numbers < 0 or word_max_numbers < 0:
+        raise click.ClickException("--word-min-numbers/--word-max-numbers must be >= 0.")
+    if word_max_numbers < word_min_numbers:
+        raise click.ClickException("--word-max-numbers must be >= --word-min-numbers.")
 
     digset = DIGITS_0_9 if digits.lower() == "0-9" else DIGITS_1_9
 
@@ -381,15 +425,26 @@ def pw_gen_cli(
         fmt_final = _normalize_fmt(fmt, length)
 
     passwords: List[str] = []
-    for _ in range(count):
-        passwords.append(
-            generate_password(
-                policy=policy,
-                fmt=fmt_final,
-                symbols=symbols,
-                digits=digset,
-            )
+    if style == "memorable":
+        word_policy = MemorablePasswordPolicy(
+            min_numbers=word_min_numbers,
+            max_numbers=word_max_numbers,
+            substitution_chance=word_substitution_chance,
+            uppercase_chance=word_uppercase_chance,
+            separator=word_separator,
         )
+        for _ in range(count):
+            passwords.append(generate_memorable_password(word_policy))
+    else:
+        for _ in range(count):
+            passwords.append(
+                generate_password(
+                    policy=policy,
+                    fmt=fmt_final,
+                    symbols=symbols,
+                    digits=digset,
+                )
+            )
 
     # If appending to an existing file, do that first (and optionally also output)
     if append_path is not None:

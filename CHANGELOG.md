@@ -1,3 +1,17 @@
+
+## Unreleased
+
+### Added
+- Added `wireless-info` CLI command for pulling Wi-Fi/password/queue information from MikroTik neighbor devices behind one `System=ETTP` inventory row.
+- `wireless-info` supports CSV/XLSX output, optional `Abbr` site matching, and optional legacy `vlan-id` output via `--include-vlan-id`.
+
+### Changed
+- Renamed the new MikroTik data-pull workflow from `mt-data-pull` to `wireless-info` so the command describes the report instead of implying a specific site.
+- Removed `vlan-id` from default wireless-info output.
+- `wireless-info` now builds merged customer-facing rows: modem/router neighbors provide queue/speed data, AP modem neighbors provide wireless/password data, and hAP-style single devices can provide both.
+- XLSX output now includes a `Raw_Devices` troubleshooting sheet while CSV output remains the merged report only.
+- Replaced per-device progress bars with one overall device-processing progress bar.
+
 # 🧾 Changelog
 
 ## [v0.2.0] - 2025-11-11  
