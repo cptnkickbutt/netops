@@ -34,6 +34,27 @@ Set `NETOPS_FILES_DIR` to use a different default generated-files directory.
 
 ## Commands
 
+### `netops daily-export`
+
+Collect RouterOS exports, backup logs, and hotspot assets for inventory rows matching the selected roles.
+
+Typical usage:
+
+```bash
+netops daily-export
+netops daily-export --testing
+netops daily-export --single
+```
+
+Notes:
+
+- Hashlog reporting is enabled by default, including in `--testing` mode.
+- The export zip includes original per-site hashlog files, plus `combined_hashlog.txt` and `hashlog.csv` under each site's `hash-log/` folder when hashlogs are present.
+- The export zip also includes a root-level `{date}_Hashlog_Report.xlsx` workbook with a summary, an all-sites sheet, and one sheet per site with parsed hashlog rows.
+- Use `--no-hashlog-report` to skip the combined text, CSV, and XLSX hashlog report artifacts.
+- Remote daily export cleanup is enabled by default after upload. It keeps 180 days of `*_Daily_Exports.zip` files and only deletes filenames matching the daily export pattern.
+- In `--testing` mode, remote cleanup runs as a dry run and logs what it would delete. Use `--cleanup-days` to change the retention window or `--no-cleanup` to skip it.
+
 ### `netops wireless-info`
 
 Pull Wi-Fi/password/queue information from MikroTik neighbor devices for one `System=ETTP` inventory row.

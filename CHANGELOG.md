@@ -1,9 +1,14 @@
 
 ## Unreleased
 
+## [v0.5.1] - 2026-06-19
+
 ### Added
 - Added `wireless-info` CLI command for pulling Wi-Fi/password/queue information from MikroTik neighbor devices behind one `System=ETTP` inventory row.
 - `wireless-info` supports CSV/XLSX output, optional `Abbr` site matching, and optional legacy `vlan-id` output via `--include-vlan-id`.
+- Added default-on hashlog reporting to `daily-export`, including per-site combined hashlog text, per-site parsed CSV output, and a root-level hashlog summary workbook.
+- Added remote daily export retention cleanup after upload, with a default 180-day window and `--cleanup-days` / `--no-cleanup` controls.
+- Added tests for hashlog parsing/report generation and file-server daily export cleanup selection.
 
 ### Changed
 - Renamed the new MikroTik data-pull workflow from `mt-data-pull` to `wireless-info` so the command describes the report instead of implying a specific site.
@@ -11,6 +16,7 @@
 - `wireless-info` now builds merged customer-facing rows: modem/router neighbors provide queue/speed data, AP modem neighbors provide wireless/password data, and hAP-style single devices can provide both.
 - XLSX output now includes a `Raw_Devices` troubleshooting sheet while CSV output remains the merged report only.
 - Replaced per-device progress bars with one overall device-processing progress bar.
+- `daily-export --testing` now keeps hashlog reporting enabled and runs remote cleanup as a dry run, logging the files it would remove.
 
 # 🧾 Changelog
 

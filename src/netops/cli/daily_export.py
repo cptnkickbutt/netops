@@ -13,9 +13,10 @@ import asyncio
 from ..inventory import load_inventory_csv, select, Device
 from ..config import load_env, resolve_env, FileSvrCfg
 from ..logging import setup_logging, get_logger
-from ..uploader import upload_to_file_server, remove_from_file_server
+from ..uploader import cleanup_old_daily_exports, upload_to_file_server, remove_from_file_server
 from ..emailer import send_email_with_attachment
 from ..paths import generated_file_path
+from ..reports.hashlog import SiteHashlogReport, build_hashlog_workbook_bytes, build_site_hashlog_report
 from ..transports.ssh import make_ssh_client, ssh_exec
 
 
@@ -318,12 +319,18 @@ async def _collect_one(dev: Device, *, delete_remote_logs: bool):
 @click.option("--roles", default="firewall,export,backup",
               help="Comma list of roles to include (default: firewall,export,backup).")
 @click.option("--no-email", is_flag=True, help="Email only Eric instead of full distro.")
-@click.option("--keep", is_flag=True, help="Keep local zip(s) (skip cleanup).")
+@click.option("--keep", is_flag=True, help="Keep local zip(s) after upload.")
 @click.option("--keep-remote-logs", is_flag=True,
               help="Do NOT delete remote log.N.txt / Changelog.N.txt after download (debug/test).")
 @click.option("--testing", is_flag=True,
               help="Testing mode: implies --no-email + --keep-remote-logs + --no-progress + --log-level DEBUG; "
-                   "uploads and then deletes remote zip to validate connectivity.")
+                   "uploads and then deletes remote zip to validate connectivity; hashlog reports stay on by default.")
+@click.option("--hashlog-report/--no-hashlog-report", default=True, show_default=True,
+              help="Include combined per-site hashlog text, per-site CSVs, and a summary XLSX in the export zip.")
+@click.option("--cleanup/--no-cleanup", "remote_cleanup", default=True, show_default=True,
+              help="Clean old daily export zips from the file server after upload.")
+@click.option("--cleanup-days", default=180, show_default=True, type=click.IntRange(1, 3650),
+              help="Keep remote daily export zips for this many days.")
 @click.option("--progress/--no-progress", default=True, show_default=True,
               help="Show overall progress bar.")
 @click.option("--concurrency", default=6, show_default=True, type=click.IntRange(1, 64),
@@ -331,7 +338,22 @@ async def _collect_one(dev: Device, *, delete_remote_logs: bool):
 @click.option("--log-file", default=None)
 @click.option("--log-level", default="INFO",
               type=click.Choice(["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]))
-def daily_export_cli(inventory_path, single, roles, no_email, keep, keep_remote_logs, testing, progress, concurrency, log_file, log_level):
+def daily_export_cli(
+    inventory_path,
+    single,
+    roles,
+    no_email,
+    keep,
+    keep_remote_logs,
+    testing,
+    hashlog_report,
+    remote_cleanup,
+    cleanup_days,
+    progress,
+    concurrency,
+    log_file,
+    log_level,
+):
     """
     Daily exports with unified inventory + tags:
       - Exports run for devices matching --roles (default: firewall,export,backup)
@@ -383,7 +405,10 @@ def daily_export_cli(inventory_path, single, roles, no_email, keep, keep_remote_
     zip_path.parent.mkdir(parents=True, exist_ok=True)
     day_root = f"{day}_Daily_Exports"
 
-    async def _run() -> List[Tuple[str, Dict[str, bytes], Dict[str, bytes], Dict[str, bytes], str, Optional[str]]]:
+    async def _run() -> Tuple[
+        List[Tuple[str, Dict[str, bytes], Dict[str, bytes], Dict[str, bytes], str, Optional[str]]],
+        List[SiteHashlogReport],
+    ]:
         sem = asyncio.Semaphore(concurrency)
 
         async def _run_one(dev: Device):
@@ -402,20 +427,54 @@ def daily_export_cli(inventory_path, single, roles, no_email, keep, keep_remote_
             for fut in asyncio.as_completed(tasks):
                 results.append(await fut)
 
+        hashlog_reports: List[SiteHashlogReport] = []
+        hashlog_reports_by_site: Dict[str, SiteHashlogReport] = {}
+        hashlog_workbook: bytes | None = None
+        hashlog_reports_ready = False
+
+        if hashlog_report:
+            try:
+                sorted_results = sorted(results, key=lambda x: x[0].lower())
+                hashlog_reports = [
+                    build_site_hashlog_report(prop, hash_logs)
+                    for prop, hash_logs, _changelog_logs, _hotspot, _export_text, _err in sorted_results
+                ]
+                hashlog_reports_by_site = {report.site: report for report in hashlog_reports}
+                hashlog_reports_ready = True
+            except Exception as e:
+                log.warning(f"hashlog report generation failed: {e}")
+                hashlog_reports = []
+                hashlog_reports_by_site = {}
+
+            if hashlog_reports_ready:
+                try:
+                    hashlog_workbook = build_hashlog_workbook_bytes(hashlog_reports, day=day)
+                except Exception as e:
+                    log.warning(f"hashlog workbook generation failed: {e}")
+                    hashlog_workbook = None
+
         with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
             for prop, hash_logs, changelog_logs, hotspot, export_text, err in sorted(results, key=lambda x: x[0].lower()):
                 root = f"{day_root}/{prop}"
                 zf.writestr(f"{root}/export.rsc", export_text or "")
                 for name, data in hash_logs.items():
                     zf.writestr(f"{root}/hash-log/{name}", data)
+                report = hashlog_reports_by_site.get(prop)
+                if report and hash_logs:
+                    if report.combined_text:
+                        zf.writestr(f"{root}/hash-log/combined_hashlog.txt", report.combined_text)
+                    zf.writestr(f"{root}/hash-log/hashlog.csv", report.csv_bytes)
                 for name, data in changelog_logs.items():
                     zf.writestr(f"{root}/change-log/{name}", data)
                 for rel, data in hotspot.items():
                     zf.writestr(f"{root}/{rel}", data)
 
-        return results
+            if hashlog_workbook is not None:
+                zf.writestr(f"{day_root}/{day}_Hashlog_Report.xlsx", hashlog_workbook)
 
-    results = asyncio.run(_run())
+        return results, hashlog_reports
+
+    results, hashlog_reports = asyncio.run(_run())
     log.info(f"created {zip_path}")
 
     # ----- summary -----
@@ -435,6 +494,14 @@ def daily_export_cli(inventory_path, single, roles, no_email, keep, keep_remote_
                 f"hotspot_files={len(hotspot)}"
             )
     log.info(f"Sites total: {len(results)}  OK: {len(ok)}  Failed: {len(bad)}")
+    if hashlog_report:
+        total_hashlog_rows = sum(len(report.rows) for report in hashlog_reports)
+        total_parse_errors = sum(int(report.summary["Parse Errors"]) for report in hashlog_reports)
+        log.info(
+            f"Hashlog report: sites={len(hashlog_reports)}  "
+            f"rows={total_hashlog_rows}  "
+            f"parse_errors={total_parse_errors}"
+        )
     
     # upload
     cfg = FileSvrCfg.from_env()
@@ -442,6 +509,37 @@ def daily_export_cli(inventory_path, single, roles, no_email, keep, keep_remote_
 
     remote_path = upload_to_file_server(zip_path, cfg, subdir=daily_subdir)
     log.info(f"uploaded to {remote_path}")
+
+    cleanup_result = None
+    if remote_cleanup:
+        try:
+            cleanup_result = cleanup_old_daily_exports(
+                cfg,
+                subdir=daily_subdir,
+                retention_days=cleanup_days,
+                dry_run=testing,
+            )
+            action = "would delete" if cleanup_result.dry_run else "deleted"
+            cleaned_count = len(cleanup_result.expired) if cleanup_result.dry_run else len(cleanup_result.deleted)
+            log.info(
+                f"remote cleanup: scanned={cleanup_result.scanned}  "
+                f"matched={cleanup_result.matched}  "
+                f"expired={len(cleanup_result.expired)}  "
+                f"{action}={cleaned_count}  "
+                f"failed={len(cleanup_result.failed)}  "
+                f"cutoff={cleanup_result.cutoff_date:%Y-%m-%d}"
+            )
+            if cleanup_result.dry_run and cleanup_result.expired:
+                for remote_file in cleanup_result.expired[:20]:
+                    log.info(f"testing cleanup dry-run: would delete {remote_file}")
+                if len(cleanup_result.expired) > 20:
+                    log.info(f"testing cleanup dry-run: ...and {len(cleanup_result.expired) - 20} more")
+            for remote_file in cleanup_result.failed[:20]:
+                log.warning(f"remote cleanup failed to delete {remote_file}")
+        except Exception as e:
+            log.warning(f"remote cleanup failed: {e}")
+    else:
+        log.info("remote cleanup skipped per --no-cleanup")
 
     # testing: remove remote zip immediately
     if testing:
@@ -487,6 +585,14 @@ def daily_export_cli(inventory_path, single, roles, no_email, keep, keep_remote_
     body_lines = [f"Daily exports for {day}", f"Uploaded to: {remote_path}"]
     if testing:
         body_lines.append("TESTING MODE: remote zip was uploaded to test connectivity and then removed.")
+    if hashlog_report:
+        body_lines.append("Hashlog report included in the export zip.")
+    if cleanup_result is not None:
+        mode = "dry-run" if cleanup_result.dry_run else "live"
+        body_lines.append(
+            f"Remote cleanup ({mode}): retention={cleanup_result.retention_days} days, "
+            f"expired={len(cleanup_result.expired)}, deleted={len(cleanup_result.deleted)}."
+        )
     if contains_disallowed:
         body_lines.append("Note: Attachment omitted due to Gmail security policy (hotspot assets or disallowed file types).")
     body = "\n".join(body_lines)
